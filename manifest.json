@@ -1,0 +1,9 @@
+[
+  {
+    "name": "Guitar Tabs",
+    "description": "Jump straight to Songsterr guitar tabs for the currently playing track and keep auto-saved ASCII tab notes.",
+    "preview": "preview.png",
+    "main": "guitar-tabs.js",
+    "readme": "README.md"
+  }
+]

@@ -13,7 +13,7 @@
 
   window.__spicetifyGuitarTabsLoaded = true;
 
-  const EXTENSION_VERSION = "2.0.2";
+  const EXTENSION_VERSION = "2.0.3";
   const VERSION_STORAGE_KEY = "spicetify-guitar-tabs:last-seen-version";
   const STORAGE_PREFIX = "spicetify-guitar-tabs:v2:";
   const LEGACY_PREFIX = "guitar-tabs-";
@@ -25,17 +25,17 @@
     version: EXTENSION_VERSION,
     title: "Guitar Tabs Update",
     added: [
-      "Replaced the blurry topbar icon with a crisp Spotify-native music note icon.",
-      "Restored official Songsterr blue (#0077cc) and Ultimate Guitar yellow (#FFD706) button colors.",
-      "Updated Web Search to search broadly across all guitar tab sites."
+      "Background tab pre-fetching so direct Songsterr links are ready before you even click the button.",
+      "Parallel multi-proxy API resolver for much faster direct tab matching."
     ],
     fixed: [
-      "Fixed low-resolution distortion on the topbar button at 16x16 scaling.",
-      "Removed redundant site:songsterr.com filter from the Web Search fallback button."
+      "Replaced localhost-restricted corsproxy.io with active CORS relays so links jump straight to the tab instead of stopping on Songsterr's search screen.",
+      "Eliminated sequential fetch delays that caused slow direct-link resolution."
     ]
   };
 
   const resolvedUrlCache = new Map();
+  let prefetchTimer = null;
 
   function stripDiacritics(str) {
     return (str || "")
@@ -158,7 +158,7 @@
     return score;
   }
 
-  async function fetchJsonWithTimeout(url, timeoutMs = 2500) {
+  async function fetchJsonWithTimeout(url, timeoutMs = 4500) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -172,29 +172,56 @@
     }
   }
 
+  async function fetchAllOriginsGet(targetUrl, timeoutMs = 4500) {
+    const wrapper = await fetchJsonWithTimeout(
+      `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`,
+      timeoutMs
+    );
+    if (wrapper && typeof wrapper.contents === "string") {
+      try {
+        return JSON.parse(wrapper.contents);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function firstValidArray(promises) {
+    return new Promise((resolve) => {
+      let pending = promises.length;
+      if (pending === 0) return resolve(null);
+      let settled = false;
+
+      for (const p of promises) {
+        Promise.resolve(p)
+          .then((data) => {
+            if (!settled && Array.isArray(data) && data.length > 0) {
+              settled = true;
+              resolve(data);
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            pending -= 1;
+            if (!settled && pending === 0) {
+              resolve(null);
+            }
+          });
+      }
+    });
+  }
+
   async function querySongsterrApi(query) {
     const apiUrl = `https://www.songsterr.com/api/songs?pattern=${encodeURIComponent(query)}`;
 
-    const directData = await fetchJsonWithTimeout(apiUrl, 2000);
-    if (Array.isArray(directData)) return directData;
-
-    const allOriginsUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`;
-    const allOriginsData = await fetchJsonWithTimeout(allOriginsUrl, 2500);
-    if (Array.isArray(allOriginsData)) return allOriginsData;
-
-    const corsProxyUrl = `https://corsproxy.io/?${encodeURIComponent(apiUrl)}`;
-    const corsProxyData = await fetchJsonWithTimeout(corsProxyUrl, 2500);
-    if (Array.isArray(corsProxyData)) return corsProxyData;
-
-    if (Spicetify?.CosmosAsync?.get) {
-      try {
-        const cosmosRes = await Spicetify.CosmosAsync.get(apiUrl);
-        if (Array.isArray(cosmosRes)) return cosmosRes;
-        if (Array.isArray(cosmosRes?.body)) return cosmosRes.body;
-      } catch (_) {}
-    }
-
-    return null;
+    return await firstValidArray([
+      fetchJsonWithTimeout(apiUrl, 3000),
+      fetchAllOriginsGet(apiUrl, 4500),
+      fetchJsonWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`, 4500),
+      fetchJsonWithTimeout(`https://api.cors.lol/?url=${encodeURIComponent(apiUrl)}`, 4500),
+      fetchJsonWithTimeout(`https://thingproxy.freeboard.io/fetch/${apiUrl}`, 4500)
+    ]);
   }
 
   async function resolveSongsterrUrl(track) {
@@ -236,9 +263,17 @@
       }
     }
 
-    const fallbackResult = { url: fallbacks.songsterrSearch, isDirect: false };
-    resolvedUrlCache.set(cacheKey, fallbackResult);
-    return fallbackResult;
+    return { url: fallbacks.songsterrSearch, isDirect: false };
+  }
+
+  function scheduleBackgroundPrefetch() {
+    clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(() => {
+      const track = getCurrentTrackInfo();
+      if (track && !resolvedUrlCache.has(track.storageKey)) {
+        resolveSongsterrUrl(track);
+      }
+    }, 700);
   }
 
   function openExternalUrl(url) {
@@ -812,14 +847,14 @@
       saveStatusEl.textContent = "Cleared";
     });
 
-    const onSongChange = () => {
+    const onModalSongChange = () => {
       if (document.getElementById(MODAL_ID)) {
         syncTrackView();
       } else {
-        Spicetify.Player.removeEventListener("songchange", onSongChange);
+        Spicetify.Player.removeEventListener("songchange", onModalSongChange);
       }
     };
-    Spicetify.Player.addEventListener("songchange", onSongChange);
+    Spicetify.Player.addEventListener("songchange", onModalSongChange);
 
     await syncTrackView();
   }
@@ -838,6 +873,9 @@
     openModal,
     false
   );
+
+  Spicetify.Player.addEventListener("songchange", scheduleBackgroundPrefetch);
+  scheduleBackgroundPrefetch();
 
   const lastSeenVersion = localStorage.getItem(VERSION_STORAGE_KEY);
   if (lastSeenVersion !== EXTENSION_VERSION) {

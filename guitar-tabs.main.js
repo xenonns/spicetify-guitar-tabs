@@ -13,7 +13,7 @@
 
   window.__spicetifyGuitarTabsLoaded = true;
 
-  const EXTENSION_VERSION = "2.0.1";
+  const EXTENSION_VERSION = "2.0.2";
   const VERSION_STORAGE_KEY = "spicetify-guitar-tabs:last-seen-version";
   const STORAGE_PREFIX = "spicetify-guitar-tabs:v2:";
   const LEGACY_PREFIX = "guitar-tabs-";
@@ -25,12 +25,13 @@
     version: EXTENSION_VERSION,
     title: "Guitar Tabs Update",
     added: [
+      "Replaced the blurry topbar icon with a crisp Spotify-native music note icon.",
       "Restored official Songsterr blue (#0077cc) and Ultimate Guitar yellow (#FFD706) button colors.",
-      "Updated Web Search to search broadly across all guitar tab sites instead of restricting results to Songsterr."
+      "Updated Web Search to search broadly across all guitar tab sites."
     ],
     fixed: [
-      "Removed redundant site:songsterr.com filter from the Web Search fallback button.",
-      "Improved button contrast and hover states for quick visual distinction."
+      "Fixed low-resolution distortion on the topbar button at 16x16 scaling.",
+      "Removed redundant site:songsterr.com filter from the Web Search fallback button."
     ]
   };
 
@@ -825,7 +826,9 @@
 
   const GUITAR_ICON_SVG = `
     <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
-      <path d="M12.5 1.5a.75.75 0 0 1 .53.22l1.25 1.25a.75.75 0 0 1 0 1.06l-1.1 1.1a.75.75 0 0 1-1.06 0l-.19-.19-2.22 2.22a3.75 3.75 0 0 1-.82 4.11l-.96.96a3.5 3.5 0 0 1-4.95-4.95l.96-.96a3.75 3.75 0 0 1 4.11-.82l2.22-2.22-.19-.19a.75.75 0 0 1 0-1.06l1.1-1.1a.75.75 0 0 1 .53-.22zM5.6 8.6a2 2 0 1 0 2.8 2.8 2 2 0 0 0-2.8-2.8z"/>
+      <path d="M6 13c0 1.105-1.12 2-2.5 2S1 14.105 1 13c0-1.104 1.12-2 2.5-2s2.5.896 2.5 2zm9-2c0 1.105-1.12 2-2.5 2s-2.5-.895-2.5-2 1.12-2 2.5-2 2.5.895 2.5 2z"/>
+      <path fill-rule="evenodd" d="M14 11V2h1v9h-1zM6 3v10H5V3h1z"/>
+      <path d="M5 2.905a1 1 0 0 1 .9-.995l8-.8a1 1 0 0 1 1.1.995V3L5 4V2.905z"/>
     </svg>
   `;
 

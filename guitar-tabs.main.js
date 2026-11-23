@@ -13,7 +13,7 @@
 
   window.__spicetifyGuitarTabsLoaded = true;
 
-  const EXTENSION_VERSION = "2.0.3";
+  const EXTENSION_VERSION = "2.0.5";
   const VERSION_STORAGE_KEY = "spicetify-guitar-tabs:last-seen-version";
   const STORAGE_PREFIX = "spicetify-guitar-tabs:v2:";
   const LEGACY_PREFIX = "guitar-tabs-";
@@ -25,12 +25,12 @@
     version: EXTENSION_VERSION,
     title: "Guitar Tabs Update",
     added: [
-      "Background tab pre-fetching so direct Songsterr links are ready before you even click the button.",
-      "Parallel multi-proxy API resolver for much faster direct tab matching."
+      "Direct-tab jump routing for Ultimate Guitar so it opens the tab page instead of search results.",
+      "CSP-proof direct-tab redirect for Songsterr that bypasses Spotify's internal fetch restrictions."
     ],
     fixed: [
-      "Replaced localhost-restricted corsproxy.io with active CORS relays so links jump straight to the tab instead of stopping on Songsterr's search screen.",
-      "Eliminated sequential fetch delays that caused slow direct-link resolution."
+      "Fixed Songsterr stopping on the 'Search tabs' overlay when Spotify's CSP blocked background API calls.",
+      "Fixed Ultimate Guitar opening search.php instead of jumping straight to the song's tab page."
     ]
   };
 
@@ -121,12 +121,11 @@
     };
   }
 
-  function buildFallbackUrls(track) {
-    const q = encodeURIComponent(track.searchQuery);
+  function buildDirectJumpUrls(track) {
     return {
-      songsterrSearch: `https://www.songsterr.com/?pattern=${q}`,
-      duckDuckGo: `https://duckduckgo.com/?q=${encodeURIComponent(`${track.searchQuery} guitar tab`)}`,
-      ultimateGuitar: `https://www.ultimate-guitar.com/search.php?search_type=title&value=${q}`
+      songsterrDirectJump: `https://duckduckgo.com/?q=${encodeURIComponent(`!ducky site:songsterr.com/a/wsa ${track.searchQuery}`)}`,
+      ultimateGuitarDirectJump: `https://duckduckgo.com/?q=${encodeURIComponent(`!ducky site:tabs.ultimate-guitar.com/tab ${track.searchQuery}`)}`,
+      webSearch: `https://duckduckgo.com/?q=${encodeURIComponent(`${track.searchQuery} guitar tab`)}`
     };
   }
 
@@ -158,70 +157,53 @@
     return score;
   }
 
-  async function fetchJsonWithTimeout(url, timeoutMs = 4500) {
+  function extractSongList(payload) {
+    let data = payload;
+    if (typeof data === "string") {
+      try {
+        data = JSON.parse(data);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (!data) return null;
+    if (data.body !== undefined) {
+      return extractSongList(data.body);
+    }
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data.songs)) return data.songs;
+    if (Array.isArray(data.results)) return data.results;
+    if (Array.isArray(data.data)) return data.data;
+    return null;
+  }
+
+  async function fetchJsonWithTimeout(url, timeoutMs = 2500) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
       if (!res.ok) return null;
-      return await res.json();
+      const text = await res.text();
+      return extractSongList(text);
     } catch (_) {
       clearTimeout(timeoutId);
       return null;
     }
   }
 
-  async function fetchAllOriginsGet(targetUrl, timeoutMs = 4500) {
-    const wrapper = await fetchJsonWithTimeout(
-      `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`,
-      timeoutMs
-    );
-    if (wrapper && typeof wrapper.contents === "string") {
-      try {
-        return JSON.parse(wrapper.contents);
-      } catch (_) {
-        return null;
-      }
+  async function querySongsterrApi(query) {
+    const encoded = encodeURIComponent(query);
+    const endpoints = [
+      `https://www.songsterr.com/api/songs?pattern=${encoded}`,
+      `https://www.songsterr.com/a/ra/songs.json?pattern=${encoded}`
+    ];
+
+    for (const url of endpoints) {
+      const list = await fetchJsonWithTimeout(url, 2000);
+      if (Array.isArray(list) && list.length > 0) return list;
     }
     return null;
-  }
-
-  function firstValidArray(promises) {
-    return new Promise((resolve) => {
-      let pending = promises.length;
-      if (pending === 0) return resolve(null);
-      let settled = false;
-
-      for (const p of promises) {
-        Promise.resolve(p)
-          .then((data) => {
-            if (!settled && Array.isArray(data) && data.length > 0) {
-              settled = true;
-              resolve(data);
-            }
-          })
-          .catch(() => {})
-          .finally(() => {
-            pending -= 1;
-            if (!settled && pending === 0) {
-              resolve(null);
-            }
-          });
-      }
-    });
-  }
-
-  async function querySongsterrApi(query) {
-    const apiUrl = `https://www.songsterr.com/api/songs?pattern=${encodeURIComponent(query)}`;
-
-    return await firstValidArray([
-      fetchJsonWithTimeout(apiUrl, 3000),
-      fetchAllOriginsGet(apiUrl, 4500),
-      fetchJsonWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`, 4500),
-      fetchJsonWithTimeout(`https://api.cors.lol/?url=${encodeURIComponent(apiUrl)}`, 4500),
-      fetchJsonWithTimeout(`https://thingproxy.freeboard.io/fetch/${apiUrl}`, 4500)
-    ]);
   }
 
   async function resolveSongsterrUrl(track) {
@@ -234,7 +216,7 @@
       return resolvedUrlCache.get(cacheKey);
     }
 
-    const fallbacks = buildFallbackUrls(track);
+    const jumpUrls = buildDirectJumpUrls(track);
     const songs = await querySongsterrApi(track.searchQuery);
 
     if (Array.isArray(songs) && songs.length > 0) {
@@ -263,7 +245,9 @@
       }
     }
 
-    return { url: fallbacks.songsterrSearch, isDirect: false };
+    const jumpResult = { url: jumpUrls.songsterrDirectJump, isDirect: false };
+    resolvedUrlCache.set(cacheKey, jumpResult);
+    return jumpResult;
   }
 
   function scheduleBackgroundPrefetch() {
@@ -273,7 +257,7 @@
       if (track && !resolvedUrlCache.has(track.storageKey)) {
         resolveSongsterrUrl(track);
       }
-    }, 700);
+    }, 500);
   }
 
   function openExternalUrl(url) {
@@ -677,7 +661,7 @@
 
         <div class="sgt-actions-row">
           <button class="sgt-btn-primary" id="sgt-open-songsterr">Open on Songsterr</button>
-          <button class="sgt-btn-secondary" id="sgt-open-ug" title="Search on Ultimate Guitar">Ultimate Guitar</button>
+          <button class="sgt-btn-secondary" id="sgt-open-ug" title="Jump directly to Ultimate Guitar tab">Ultimate Guitar</button>
           <button class="sgt-btn-secondary" id="sgt-open-ddg" title="Search the web for guitar tabs">Web Search</button>
         </div>
 
@@ -752,14 +736,14 @@
         activeTrack.rawArtist ? ` — ${escapeHtml(activeTrack.rawArtist)}` : ""
       }`;
 
-      const fallbacks = buildFallbackUrls(activeTrack);
-      activeUrls.primary = fallbacks.songsterrSearch;
-      activeUrls.ultimateGuitar = fallbacks.ultimateGuitar;
-      activeUrls.duckDuckGo = fallbacks.duckDuckGo;
+      const jumpUrls = buildDirectJumpUrls(activeTrack);
+      activeUrls.primary = jumpUrls.songsterrDirectJump;
+      activeUrls.ultimateGuitar = jumpUrls.ultimateGuitarDirectJump;
+      activeUrls.duckDuckGo = jumpUrls.webSearch;
 
-      badgeEl.textContent = "Matching...";
+      badgeEl.textContent = "Direct Jump";
       primaryBtn.textContent = "Open on Songsterr";
-      urlPreviewEl.textContent = fallbacks.songsterrSearch;
+      urlPreviewEl.textContent = jumpUrls.songsterrDirectJump;
 
       textarea.value = loadNotes(activeTrack);
       saveStatusEl.textContent = textarea.value ? "Loaded" : "";
@@ -771,13 +755,7 @@
 
       activeUrls.primary = resolved.url;
       urlPreviewEl.textContent = resolved.url;
-      if (resolved.isDirect) {
-        badgeEl.textContent = "Direct Tab";
-        primaryBtn.textContent = "Open on Songsterr (direct tab)";
-      } else {
-        badgeEl.textContent = "Songsterr Search";
-        primaryBtn.textContent = "Search on Songsterr";
-      }
+      badgeEl.textContent = resolved.isDirect ? "Direct Tab" : "Direct Jump";
     }
 
     closeBtn.addEventListener("click", closeModal);
